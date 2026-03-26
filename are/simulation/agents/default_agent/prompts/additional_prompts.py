@@ -190,6 +190,10 @@ To do so, you have been given access to the following tools: <<tool_names>>
 The way you use the tools is by specifying a json blob, ending with '<end_action>'.
 Specifically, this json should have an `action` key (name of the tool to use) and an `action_input` key (input to the tool).
 
+CRITICAL INSTRUCTION: The $ACTION_JSON_BLOB must contain EXACTLY ONE action. Do NOT output multiple actions in a single response.
+
+⚠️  IMPORTANT: If you think of multiple things to do, you MUST pick ONLY the most important one. Submit that action and wait for feedback in the next turn. Additional action attempts in the same response will be IGNORED.
+
 The $ACTION_JSON_BLOB should only contain a SINGLE action, do NOT return a list of multiple actions. It should be formatted in json. Do not try to escape special characters. Here is the template of a valid $ACTION_JSON_BLOB:
 {
   "action": $TOOL_NAME,
@@ -258,6 +262,10 @@ DEFAULT_REACT_JSON_SYSTEM_PROMPT_SEARCH = SystemPrompt(
 To do so, you have been given access to the following tools: <<tool_names>>
 The way you use the tools is by specifying a json blob, ending with '<end_action>'.
 Specifically, this json should have an `action` key (name of the tool to use) and an `action_input` key (input to the tool).
+
+CRITICAL INSTRUCTION: The $ACTION_JSON_BLOB must contain EXACTLY ONE action. Do NOT output multiple actions in a single response.
+
+⚠️  IMPORTANT: If you think of multiple things to do, you MUST pick ONLY the most important one. Submit that action and wait for feedback in the next turn. Additional action attempts in the same response will be IGNORED.
 
 The $ACTION_JSON_BLOB should only contain a SINGLE action, do NOT return a list of multiple actions. It should be formatted in json. Do not try to escape special characters. Here is the template of a valid $ACTION_JSON_BLOB:
 {

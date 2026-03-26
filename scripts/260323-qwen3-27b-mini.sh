@@ -1,0 +1,11 @@
+are-benchmark run --hf-dataset datasets/gaia2/ \
+    --hf-split validation \
+    --hf-config mini \
+    --agent default \
+    --model hosted_vllm/Qwen/Qwen3.5-27B \
+    --provider local \
+    --endpoint "http://localhost:8010/v1" \
+    --judge_model hosted_vllm/Qwen/Qwen3.5-27B \
+    --judge_provider local \
+    --judge_endpoint "http://localhost:8010/v1" \
+    --output_dir ./results/260323-qwen3-27b-mini

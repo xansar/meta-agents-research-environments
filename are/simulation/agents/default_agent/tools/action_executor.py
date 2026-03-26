@@ -56,18 +56,19 @@ class BaseActionExecutor:
                 raise IndexError(
                     f"Expected at least 2 parts after splitting by '{split_token}', got {len(split)}"
                 )
-            rationale, action = (
-                split[-2],
-                split[-1],
-            )
+            # When multiple actions are present, take the first one only
+            # This handles cases where the model generates multiple action attempts
+            rationale, action = split[0], split[1]
+            if len(split) > 2:
+                self.logger.warning(
+                    f"Multiple actions detected in output. Using only the first action. "
+                    f"Output had {len(split) - 1} action blocks. "
+                    f"Ignored actions: {split[2:]}"
+                )
         except Exception as e:
             self.logger.error(e, exc_info=True)
             raise InvalidActionAgentError(
                 f"Error: No '{split_token}' token provided in your output.\nYour output:\n{llm_output}\n. Be sure to include an action, prefaced with '{split_token}'!\nException: {e}"
-            )
-        if len(split) > 2:
-            raise FormatError(
-                f"Found multiple actions in output {llm_output} - please provide only one thought and one action"
             )
         return AgentAction(rationale, action)
 
