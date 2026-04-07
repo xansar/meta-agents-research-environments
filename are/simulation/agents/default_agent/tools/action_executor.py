@@ -5,6 +5,7 @@
 # the root directory of this source tree.
 
 
+import json
 from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -17,6 +18,7 @@ from are.simulation.agents.default_agent.utils.logging_utils import (
 from are.simulation.agents.llm.types import MMObservation
 from are.simulation.exceptions import FormatError, InvalidActionAgentError
 from are.simulation.tools import Tool
+from are.simulation.utils.serialization import make_serializable
 
 
 @dataclass
@@ -102,23 +104,30 @@ class BaseActionExecutor:
 
     def _append_final_answer(
         self,
-        observation: MMObservation | str,
+        observation: Any,
         append_agent_log: Callable[[BaseAgentLog], None],
         make_timestamp: Callable[[], float],
         agent_id: str,
     ):
+        content, attachments = self._get_loggable_observation(observation)
+        append_agent_log(
+            FinalAnswerLog(
+                content=content,
+                attachments=attachments,
+                timestamp=make_timestamp(),
+                agent_id=agent_id,
+            )
+        )
+
+    def _get_loggable_observation(
+        self, observation: Any
+    ) -> tuple[str, list[Any]]:
+        if isinstance(observation, MMObservation):
+            return observation.content, observation.attachments
         if isinstance(observation, str):
-            append_agent_log(
-                FinalAnswerLog(
-                    content=observation, timestamp=make_timestamp(), agent_id=agent_id
-                )
-            )
-        else:
-            append_agent_log(
-                FinalAnswerLog(
-                    content=observation.content,
-                    attachments=observation.attachments,
-                    timestamp=make_timestamp(),
-                    agent_id=agent_id,
-                )
-            )
+            return observation, []
+
+        try:
+            return json.dumps(make_serializable(observation), sort_keys=True), []
+        except (TypeError, ValueError):
+            return str(observation), []

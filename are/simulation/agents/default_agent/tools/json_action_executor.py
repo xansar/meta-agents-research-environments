@@ -172,21 +172,19 @@ class JsonActionExecutor(BaseActionExecutor):
         observation = self.execute_tool_call(
             parsed_action, append_agent_log, make_timestamp
         )
+        observation_content, observation_attachments = self._get_loggable_observation(
+            observation
+        )
 
         # 3. Log the observation in logs
-        if isinstance(observation, MMObservation):
-            append_agent_log(
-                get_observation_log(
-                    make_timestamp(),
-                    observation.content,
-                    agent_id,
-                    observation.attachments,
-                )
+        append_agent_log(
+            get_observation_log(
+                make_timestamp(),
+                observation_content,
+                agent_id,
+                observation_attachments,
             )
-        else:
-            append_agent_log(
-                get_observation_log(make_timestamp(), str(observation), agent_id)
-            )
+        )
 
         # 4. Log the final answer in logs
         if tool_name == "final_answer":
