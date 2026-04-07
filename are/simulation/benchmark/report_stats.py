@@ -5,8 +5,10 @@
 # the root directory of this source tree.
 
 
+import math
 import logging
-from typing import TYPE_CHECKING, Any
+from statistics import NormalDist
+from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 import polars as pl
@@ -15,6 +17,14 @@ if TYPE_CHECKING:
     from are.simulation.scenarios.validation_result import MultiScenarioValidationResult
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_BOOTSTRAP_NUM_RESAMPLES = 1000
+DEFAULT_BOOTSTRAP_CONFIDENCE_LEVEL = 0.95
+DEFAULT_BOOTSTRAP_RANDOM_SEED = 0
+DEFAULT_BOOTSTRAP_SAMPLE_RATIO = 1.0
+SCENARIO_CLUSTER_COLUMNS = ("base_scenario_id", "phase_name")
+SCENARIO_CLUSTER_SAMPLING_UNIT = "scenario_cluster"
+_STANDARD_NORMAL = NormalDist()
 
 
 def _safe_mean_to_float(mean_value: Any) -> float | None:
@@ -32,6 +42,231 @@ def _safe_mean_to_float(mean_value: Any) -> float | None:
         return float(mean_value)
     # If it's not a numeric type, return None to indicate invalid data
     return None
+
+
+def _build_capability_key_and_display_name(
+    config: str, phase_name: str
+) -> tuple[str, str]:
+    """Build the capability key used in reports and its display name."""
+    if config == "mini":
+        return f"{config}_{phase_name}", f"{config} ({phase_name})"
+    return config, config
+
+
+def _build_empty_bootstrap_summary(
+    point_estimate: float,
+    num_resamples: int,
+    confidence_level: float,
+    sample_size: int = 0,
+    sample_ratio: float = DEFAULT_BOOTSTRAP_SAMPLE_RATIO,
+    resample_size: int = 0,
+    method: str = "bca",
+    sampling_unit: str = SCENARIO_CLUSTER_SAMPLING_UNIT,
+) -> dict[str, Any]:
+    """Build a default bootstrap summary."""
+    return {
+        "method": method,
+        "sampling_unit": sampling_unit,
+        "num_resamples": num_resamples,
+        "confidence_level": confidence_level,
+        "sample_size": sample_size,
+        "sample_ratio": sample_ratio,
+        "resample_size": resample_size,
+        "point_estimate": point_estimate,
+        "bootstrap_mean": point_estimate,
+        "bootstrap_std": 0.0,
+        "bootstrap_sem": 0.0,
+        "ci_lower": point_estimate,
+        "ci_upper": point_estimate,
+    }
+
+
+def _calculate_percentile_confidence_interval(
+    bootstrap_estimates: np.ndarray, confidence_level: float
+) -> tuple[float, float]:
+    """Calculate a percentile bootstrap confidence interval."""
+    if bootstrap_estimates.size == 0:
+        return 0.0, 0.0
+
+    alpha = 1.0 - confidence_level
+    return (
+        float(np.quantile(bootstrap_estimates, alpha / 2.0)),
+        float(np.quantile(bootstrap_estimates, 1.0 - alpha / 2.0)),
+    )
+
+
+def _calculate_bca_confidence_interval(
+    point_estimate: float,
+    bootstrap_estimates: np.ndarray,
+    jackknife_estimates: np.ndarray,
+    confidence_level: float,
+) -> tuple[float, float, str]:
+    """Calculate a BCa confidence interval with percentile fallback."""
+    percentile_lower, percentile_upper = _calculate_percentile_confidence_interval(
+        bootstrap_estimates, confidence_level
+    )
+
+    if bootstrap_estimates.size == 0 or jackknife_estimates.size < 2:
+        return percentile_lower, percentile_upper, "percentile_fallback"
+
+    jackknife_mean = float(np.mean(jackknife_estimates))
+    jackknife_diffs = jackknife_mean - jackknife_estimates
+    acceleration_denominator = float(np.sum(jackknife_diffs**2))
+
+    if acceleration_denominator <= 0.0:
+        return percentile_lower, percentile_upper, "percentile_fallback"
+
+    acceleration = float(
+        np.sum(jackknife_diffs**3)
+        / (6.0 * (acceleration_denominator ** 1.5))
+    )
+
+    tie_adjusted_proportion = (
+        float(np.sum(bootstrap_estimates < point_estimate))
+        + 0.5 * float(np.sum(bootstrap_estimates == point_estimate))
+    ) / float(bootstrap_estimates.size)
+    epsilon = 1.0 / (2.0 * float(bootstrap_estimates.size))
+    tie_adjusted_proportion = min(
+        max(tie_adjusted_proportion, epsilon), 1.0 - epsilon
+    )
+    bias_correction = _STANDARD_NORMAL.inv_cdf(tie_adjusted_proportion)
+
+    alpha = 1.0 - confidence_level
+    adjusted_probabilities = []
+    for probability in (alpha / 2.0, 1.0 - alpha / 2.0):
+        z_alpha = _STANDARD_NORMAL.inv_cdf(probability)
+        denominator = 1.0 - acceleration * (bias_correction + z_alpha)
+        if abs(denominator) < 1e-12:
+            return percentile_lower, percentile_upper, "percentile_fallback"
+
+        adjusted_probability = _STANDARD_NORMAL.cdf(
+            bias_correction + (bias_correction + z_alpha) / denominator
+        )
+        adjusted_probabilities.append(
+            min(max(float(adjusted_probability), 0.0), 1.0)
+        )
+
+    lower_probability, upper_probability = sorted(adjusted_probabilities)
+    return (
+        float(np.quantile(bootstrap_estimates, lower_probability)),
+        float(np.quantile(bootstrap_estimates, upper_probability)),
+        "bca",
+    )
+
+
+def _get_scenario_cluster_row_indices(df: pl.DataFrame) -> list[list[int]]:
+    """Return row indices grouped by scenario cluster."""
+    if df.is_empty():
+        return []
+
+    indexed_df = df.with_row_index("__row_index")
+    cluster_df = indexed_df.group_by(
+        list(SCENARIO_CLUSTER_COLUMNS), maintain_order=True
+    ).agg(pl.col("__row_index").alias("__row_indices"))
+
+    return [
+        [int(row_index) for row_index in row["__row_indices"]]
+        for row in cluster_df.iter_rows(named=True)
+    ]
+
+
+def _calculate_bootstrap_resample_size(
+    sample_size: int, sample_ratio: float
+) -> int:
+    """Return the number of scenario clusters sampled in each resample."""
+    if sample_size <= 0 or sample_ratio <= 0.0:
+        return 0
+    return max(1, min(sample_size, math.ceil(sample_size * sample_ratio)))
+
+
+def _expand_cluster_sample_to_row_indices(
+    cluster_row_indices: list[list[int]], sampled_cluster_indices: np.ndarray
+) -> list[int]:
+    """Expand sampled scenario clusters into row indices."""
+    sampled_row_indices: list[int] = []
+    for cluster_index in sampled_cluster_indices:
+        sampled_row_indices.extend(cluster_row_indices[int(cluster_index)])
+    return sampled_row_indices
+
+
+def _calculate_bootstrap_summary(
+    df: pl.DataFrame,
+    statistic_fn: Callable[[pl.DataFrame], float],
+    num_resamples: int = DEFAULT_BOOTSTRAP_NUM_RESAMPLES,
+    confidence_level: float = DEFAULT_BOOTSTRAP_CONFIDENCE_LEVEL,
+    random_seed: int = DEFAULT_BOOTSTRAP_RANDOM_SEED,
+    sample_ratio: float = DEFAULT_BOOTSTRAP_SAMPLE_RATIO,
+) -> dict[str, Any]:
+    """Calculate bootstrap summary statistics for a scalar metric."""
+    point_estimate = float(statistic_fn(df)) if not df.is_empty() else 0.0
+    cluster_row_indices = _get_scenario_cluster_row_indices(df)
+    sample_size = len(cluster_row_indices)
+    resample_size = _calculate_bootstrap_resample_size(sample_size, sample_ratio)
+
+    if sample_size == 0 or num_resamples <= 0 or resample_size == 0:
+        return _build_empty_bootstrap_summary(
+            point_estimate=point_estimate,
+            num_resamples=max(num_resamples, 0),
+            confidence_level=confidence_level,
+            sample_size=sample_size,
+            sample_ratio=sample_ratio,
+            resample_size=resample_size,
+        )
+
+    rng = np.random.default_rng(random_seed)
+    bootstrap_estimates = np.empty(num_resamples, dtype=float)
+    for sample_idx in range(num_resamples):
+        resample_indices = rng.integers(0, sample_size, size=resample_size)
+        sampled_row_indices = _expand_cluster_sample_to_row_indices(
+            cluster_row_indices, resample_indices
+        )
+        bootstrap_estimates[sample_idx] = float(
+            statistic_fn(df[sampled_row_indices])
+        )
+
+    bootstrap_mean = float(np.mean(bootstrap_estimates))
+    bootstrap_std = (
+        float(np.std(bootstrap_estimates, ddof=1)) if num_resamples > 1 else 0.0
+    )
+    bootstrap_sem = (
+        bootstrap_std / float(np.sqrt(num_resamples)) if num_resamples > 1 else 0.0
+    )
+
+    jackknife_estimates = np.empty(sample_size, dtype=float)
+    if sample_size > 1:
+        for idx in range(sample_size):
+            leave_one_out_indices = _expand_cluster_sample_to_row_indices(
+                cluster_row_indices,
+                np.array(
+                    [cluster_idx for cluster_idx in range(sample_size) if cluster_idx != idx]
+                ),
+            )
+            jackknife_estimates[idx] = float(statistic_fn(df[leave_one_out_indices]))
+    else:
+        jackknife_estimates = np.array([], dtype=float)
+
+    ci_lower, ci_upper, method = _calculate_bca_confidence_interval(
+        point_estimate=point_estimate,
+        bootstrap_estimates=bootstrap_estimates,
+        jackknife_estimates=jackknife_estimates,
+        confidence_level=confidence_level,
+    )
+
+    return {
+        "method": method,
+        "sampling_unit": SCENARIO_CLUSTER_SAMPLING_UNIT,
+        "num_resamples": num_resamples,
+        "confidence_level": confidence_level,
+        "sample_size": sample_size,
+        "sample_ratio": sample_ratio,
+        "resample_size": resample_size,
+        "point_estimate": point_estimate,
+        "bootstrap_mean": bootstrap_mean,
+        "bootstrap_std": bootstrap_std,
+        "bootstrap_sem": bootstrap_sem,
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+    }
 
 
 def combine_results_to_dataframe(
@@ -323,6 +558,33 @@ def _calculate_capability_stats(df: pl.DataFrame, capability: str) -> dict[str, 
     }
 
 
+def _calculate_global_success_rate_from_df(
+    df: pl.DataFrame, aggregation_type: str
+) -> float:
+    """Calculate a global success rate directly from a sampled DataFrame."""
+    if df.is_empty():
+        return 0.0
+
+    capability_stats = {}
+    for config_phase in df.select(["config", "phase_name"]).unique().iter_rows():
+        config, phase_name = config_phase
+        config_phase_df = df.filter(
+            (pl.col("config") == config) & (pl.col("phase_name") == phase_name)
+        )
+        capability_key, display_name = _build_capability_key_and_display_name(
+            config, phase_name
+        )
+        capability_stats[capability_key] = _calculate_capability_stats(
+            config_phase_df, display_name
+        )
+
+    if aggregation_type == "macro":
+        return _calculate_global_macro_stats(df, capability_stats)["macro_success_rate"]
+    if aggregation_type == "micro":
+        return _calculate_global_micro_stats(df, capability_stats)["micro_success_rate"]
+    raise ValueError(f"Unknown aggregation_type: {aggregation_type}")
+
+
 def _calculate_cross_run_stats(
     df: pl.DataFrame, capability_stats: dict[str, dict[str, Any]], aggregation_type: str
 ) -> dict[str, float]:
@@ -472,7 +734,14 @@ def _calculate_global_micro_stats(
     return _calculate_cross_run_stats(df, capability_stats, "micro")
 
 
-def calculate_statistics(df: pl.DataFrame) -> dict[str, Any]:
+def calculate_statistics(
+    df: pl.DataFrame,
+    include_bootstrap: bool = False,
+    bootstrap_num_resamples: int = DEFAULT_BOOTSTRAP_NUM_RESAMPLES,
+    bootstrap_confidence_level: float = DEFAULT_BOOTSTRAP_CONFIDENCE_LEVEL,
+    bootstrap_random_seed: int = DEFAULT_BOOTSTRAP_RANDOM_SEED,
+    bootstrap_sample_ratio: float = DEFAULT_BOOTSTRAP_SAMPLE_RATIO,
+) -> dict[str, Any]:
     """Calculate comprehensive statistics for the benchmark results.
 
     This is the main function that calculates all statistics consistently
@@ -484,28 +753,42 @@ def calculate_statistics(df: pl.DataFrame) -> dict[str, Any]:
     :rtype: dict[str, Any]
     """
     if df.is_empty():
+        empty_global = {
+            "total_runs": 0,
+            "validated_runs": 0,
+            "success_runs": 0,
+            "failed_runs": 0,
+            "exception_runs": 0,
+            "no_validation_runs": 0,
+            "total_scenarios": 0,
+            "macro_success_rate": 0.0,
+            "macro_success_rate_std": 0.0,
+            "macro_success_rate_sem": 0.0,
+            "micro_success_rate": 0.0,
+            "micro_success_rate_std": 0.0,
+            "micro_success_rate_sem": 0.0,
+            "pass_at_k": 0,
+            "pass_at_k_percent": 0.0,
+            "pass_k": 0,
+            "pass_k_percent": 0.0,
+            "job_duration": 0.0,
+        }
+        if include_bootstrap:
+            empty_global["macro_success_rate_bootstrap"] = _build_empty_bootstrap_summary(
+                point_estimate=0.0,
+                num_resamples=bootstrap_num_resamples,
+                confidence_level=bootstrap_confidence_level,
+                sample_ratio=bootstrap_sample_ratio,
+            )
+            empty_global["micro_success_rate_bootstrap"] = _build_empty_bootstrap_summary(
+                point_estimate=0.0,
+                num_resamples=bootstrap_num_resamples,
+                confidence_level=bootstrap_confidence_level,
+                sample_ratio=bootstrap_sample_ratio,
+            )
         return {
             "per_capability": {},
-            "global": {
-                "total_runs": 0,
-                "validated_runs": 0,
-                "success_runs": 0,
-                "failed_runs": 0,
-                "exception_runs": 0,
-                "no_validation_runs": 0,
-                "total_scenarios": 0,
-                "macro_success_rate": 0.0,
-                "macro_success_rate_std": 0.0,
-                "macro_success_rate_sem": 0.0,
-                "micro_success_rate": 0.0,
-                "micro_success_rate_std": 0.0,
-                "micro_success_rate_sem": 0.0,
-                "pass_at_k": 0,
-                "pass_at_k_percent": 0.0,
-                "pass_k": 0,
-                "pass_k_percent": 0.0,
-                "job_duration": 0.0,
-            },
+            "global": empty_global,
         }
 
     # Calculate per-capability statistics, grouped by config and phase_name
@@ -516,17 +799,26 @@ def calculate_statistics(df: pl.DataFrame) -> dict[str, Any]:
             (pl.col("config") == config) & (pl.col("phase_name") == phase_name)
         )
 
-        # Create a key that combines config and phase for mini capability
-        if config == "mini":
-            capability_key = f"{config}_{phase_name}"
-            display_name = f"{config} ({phase_name})"
-        else:
-            capability_key = config
-            display_name = config
+        capability_key, display_name = _build_capability_key_and_display_name(
+            config, phase_name
+        )
 
         per_capability[capability_key] = _calculate_capability_stats(
             config_phase_df, display_name
         )
+        if include_bootstrap:
+            per_capability[capability_key]["success_rate_bootstrap"] = (
+                _calculate_bootstrap_summary(
+                    config_phase_df,
+                    lambda sampled_df: _calculate_success_rate_stats(sampled_df)[
+                        "success_rate"
+                    ],
+                    num_resamples=bootstrap_num_resamples,
+                    confidence_level=bootstrap_confidence_level,
+                    random_seed=bootstrap_random_seed,
+                    sample_ratio=bootstrap_sample_ratio,
+                )
+            )
 
     # Calculate global statistics
     global_run_counts = _count_runs_by_type(df)
@@ -535,16 +827,39 @@ def calculate_statistics(df: pl.DataFrame) -> dict[str, Any]:
     global_micro_stats = _calculate_global_micro_stats(df, per_capability)
     global_duration_stats = _calculate_run_duration_stats(df)
 
+    global_stats = {
+        **global_run_counts,
+        **global_pass_k_stats,
+        **global_macro_stats,
+        **global_micro_stats,
+        **global_duration_stats,
+        "job_duration": df.select("job_duration").to_series().mean(),
+    }
+    if include_bootstrap:
+        global_stats["macro_success_rate_bootstrap"] = _calculate_bootstrap_summary(
+            df,
+            lambda sampled_df: _calculate_global_success_rate_from_df(
+                sampled_df, "macro"
+            ),
+            num_resamples=bootstrap_num_resamples,
+            confidence_level=bootstrap_confidence_level,
+            random_seed=bootstrap_random_seed + 1,
+            sample_ratio=bootstrap_sample_ratio,
+        )
+        global_stats["micro_success_rate_bootstrap"] = _calculate_bootstrap_summary(
+            df,
+            lambda sampled_df: _calculate_global_success_rate_from_df(
+                sampled_df, "micro"
+            ),
+            num_resamples=bootstrap_num_resamples,
+            confidence_level=bootstrap_confidence_level,
+            random_seed=bootstrap_random_seed + 2,
+            sample_ratio=bootstrap_sample_ratio,
+        )
+
     return {
         "per_capability": per_capability,
-        "global": {
-            **global_run_counts,
-            **global_pass_k_stats,
-            **global_macro_stats,
-            **global_micro_stats,
-            **global_duration_stats,
-            "job_duration": df.select("job_duration").to_series().mean(),
-        },
+        "global": global_stats,
     }
 
 
@@ -554,6 +869,11 @@ def generate_validation_report_content(
     header_format: str = "===",
     header_prefix: str = "",
     header_suffix: str = "",
+    include_bootstrap: bool = False,
+    bootstrap_num_resamples: int = DEFAULT_BOOTSTRAP_NUM_RESAMPLES,
+    bootstrap_confidence_level: float = DEFAULT_BOOTSTRAP_CONFIDENCE_LEVEL,
+    bootstrap_random_seed: int = DEFAULT_BOOTSTRAP_RANDOM_SEED,
+    bootstrap_sample_ratio: float = DEFAULT_BOOTSTRAP_SAMPLE_RATIO,
 ) -> str:
     """Generate the content section of a validation report.
 
@@ -570,7 +890,14 @@ def generate_validation_report_content(
     :returns: Formatted content string
     :rtype: str
     """
-    stats = calculate_statistics(df)
+    stats = calculate_statistics(
+        df,
+        include_bootstrap=include_bootstrap,
+        bootstrap_num_resamples=bootstrap_num_resamples,
+        bootstrap_confidence_level=bootstrap_confidence_level,
+        bootstrap_random_seed=bootstrap_random_seed,
+        bootstrap_sample_ratio=bootstrap_sample_ratio,
+    )
 
     # Per-capability statistics
     capability_display_names = {
@@ -611,6 +938,20 @@ def generate_validation_report_content(
                 content += f"    • Exception runs (counted as failures): {cap_stats['exception_runs']}\n"
 
         content += f"  - Success rate: {cap_stats['success_rate']:.1f}% ± {cap_stats['success_rate_sem']:.1f}% (STD: {cap_stats['success_rate_std']:.1f}%)\n"
+        if include_bootstrap and "success_rate_bootstrap" in cap_stats:
+            bootstrap_stats = cap_stats["success_rate_bootstrap"]
+            confidence_percent = bootstrap_stats["confidence_level"] * 100.0
+            method = str(bootstrap_stats["method"]).replace("_", " ").upper()
+            sampling_unit = str(bootstrap_stats["sampling_unit"]).replace("_", " ")
+            sample_ratio_percent = bootstrap_stats["sample_ratio"] * 100.0
+            content += (
+                f"  - Success rate bootstrap ({method}, {sampling_unit}, {bootstrap_stats['num_resamples']} resamples, {sample_ratio_percent:.0f}% sample): "
+                f"mean {bootstrap_stats['bootstrap_mean']:.1f}% "
+                f"(STD: {bootstrap_stats['bootstrap_std']:.1f}%, "
+                f"SEM: {bootstrap_stats['bootstrap_sem']:.1f}%), "
+                f"{confidence_percent:.0f}% CI "
+                f"[{bootstrap_stats['ci_lower']:.1f}%, {bootstrap_stats['ci_upper']:.1f}%]\n"
+            )
         content += f"  - Pass@{num_runs}: {cap_stats['pass_at_k']} scenarios ({cap_stats['pass_at_k_percent']:.1f}%)\n"
         content += f"  - Pass^{num_runs}: {cap_stats['pass_k']} scenarios ({cap_stats['pass_k_percent']:.1f}%)\n"
         content += f"  - Average run duration: {cap_stats['avg_run_duration']:.1f}s (STD: {cap_stats['avg_run_duration_std']:.1f}s)\n"
@@ -639,7 +980,35 @@ def generate_validation_report_content(
             content += f"    • Exception runs (counted as failures): {global_stats['exception_runs']}\n"
 
     content += f"  - Macro success rate: {global_stats['macro_success_rate']:.1f}% ± {global_stats['macro_success_rate_sem']:.1f}% (STD: {global_stats['macro_success_rate_std']:.1f}%)\n"
+    if include_bootstrap and "macro_success_rate_bootstrap" in global_stats:
+        bootstrap_stats = global_stats["macro_success_rate_bootstrap"]
+        confidence_percent = bootstrap_stats["confidence_level"] * 100.0
+        method = str(bootstrap_stats["method"]).replace("_", " ").upper()
+        sampling_unit = str(bootstrap_stats["sampling_unit"]).replace("_", " ")
+        sample_ratio_percent = bootstrap_stats["sample_ratio"] * 100.0
+        content += (
+            f"  - Macro success bootstrap ({method}, {sampling_unit}, {bootstrap_stats['num_resamples']} resamples, {sample_ratio_percent:.0f}% sample): "
+            f"mean {bootstrap_stats['bootstrap_mean']:.1f}% "
+            f"(STD: {bootstrap_stats['bootstrap_std']:.1f}%, "
+            f"SEM: {bootstrap_stats['bootstrap_sem']:.1f}%), "
+            f"{confidence_percent:.0f}% CI "
+            f"[{bootstrap_stats['ci_lower']:.1f}%, {bootstrap_stats['ci_upper']:.1f}%]\n"
+        )
     content += f"  - Micro success rate: {global_stats['micro_success_rate']:.1f}% ± {global_stats['micro_success_rate_sem']:.1f}% (STD: {global_stats['micro_success_rate_std']:.1f}%)\n"
+    if include_bootstrap and "micro_success_rate_bootstrap" in global_stats:
+        bootstrap_stats = global_stats["micro_success_rate_bootstrap"]
+        confidence_percent = bootstrap_stats["confidence_level"] * 100.0
+        method = str(bootstrap_stats["method"]).replace("_", " ").upper()
+        sampling_unit = str(bootstrap_stats["sampling_unit"]).replace("_", " ")
+        sample_ratio_percent = bootstrap_stats["sample_ratio"] * 100.0
+        content += (
+            f"  - Micro success bootstrap ({method}, {sampling_unit}, {bootstrap_stats['num_resamples']} resamples, {sample_ratio_percent:.0f}% sample): "
+            f"mean {bootstrap_stats['bootstrap_mean']:.1f}% "
+            f"(STD: {bootstrap_stats['bootstrap_std']:.1f}%, "
+            f"SEM: {bootstrap_stats['bootstrap_sem']:.1f}%), "
+            f"{confidence_percent:.0f}% CI "
+            f"[{bootstrap_stats['ci_lower']:.1f}%, {bootstrap_stats['ci_upper']:.1f}%]\n"
+        )
     content += f"  - Pass@{num_runs}: {global_stats['pass_at_k']} scenarios ({global_stats['pass_at_k_percent']:.1f}%)\n"
     content += f"  - Pass^{num_runs}: {global_stats['pass_k']} scenarios ({global_stats['pass_k_percent']:.1f}%)\n"
     content += f"  - Average run duration: {global_stats['avg_run_duration']:.1f}s (STD: {global_stats['avg_run_duration_std']:.1f}s)\n"
@@ -649,7 +1018,15 @@ def generate_validation_report_content(
 
 
 def generate_validation_report(
-    df: pl.DataFrame, model: str, model_provider: str, num_runs: int = 3
+    df: pl.DataFrame,
+    model: str,
+    model_provider: str,
+    num_runs: int = 3,
+    include_bootstrap: bool = False,
+    bootstrap_num_resamples: int = DEFAULT_BOOTSTRAP_NUM_RESAMPLES,
+    bootstrap_confidence_level: float = DEFAULT_BOOTSTRAP_CONFIDENCE_LEVEL,
+    bootstrap_random_seed: int = DEFAULT_BOOTSTRAP_RANDOM_SEED,
+    bootstrap_sample_ratio: float = DEFAULT_BOOTSTRAP_SAMPLE_RATIO,
 ) -> str:
     """Generate a validation report using custom statistics as the new standard.
 
@@ -665,12 +1042,27 @@ def generate_validation_report(
     :rtype: str
     """
     header = generate_validation_report_header(model, model_provider)
-    content = generate_validation_report_content(df, num_runs)
+    content = generate_validation_report_content(
+        df,
+        num_runs,
+        include_bootstrap=include_bootstrap,
+        bootstrap_num_resamples=bootstrap_num_resamples,
+        bootstrap_confidence_level=bootstrap_confidence_level,
+        bootstrap_random_seed=bootstrap_random_seed,
+        bootstrap_sample_ratio=bootstrap_sample_ratio,
+    )
     return header + content
 
 
 def generate_json_stats_report(
-    df: pl.DataFrame, model: str, model_provider: str
+    df: pl.DataFrame,
+    model: str,
+    model_provider: str,
+    include_bootstrap: bool = False,
+    bootstrap_num_resamples: int = DEFAULT_BOOTSTRAP_NUM_RESAMPLES,
+    bootstrap_confidence_level: float = DEFAULT_BOOTSTRAP_CONFIDENCE_LEVEL,
+    bootstrap_random_seed: int = DEFAULT_BOOTSTRAP_RANDOM_SEED,
+    bootstrap_sample_ratio: float = DEFAULT_BOOTSTRAP_SAMPLE_RATIO,
 ) -> dict[str, Any]:
     """Generate a computer-readable JSON report.
 
@@ -686,7 +1078,14 @@ def generate_json_stats_report(
     import datetime
 
     # Calculate statistics using the same function as text report
-    stats = calculate_statistics(df)
+    stats = calculate_statistics(
+        df,
+        include_bootstrap=include_bootstrap,
+        bootstrap_num_resamples=bootstrap_num_resamples,
+        bootstrap_confidence_level=bootstrap_confidence_level,
+        bootstrap_random_seed=bootstrap_random_seed,
+        bootstrap_sample_ratio=bootstrap_sample_ratio,
+    )
 
     # Get run configurations
     run_configs = []
@@ -733,6 +1132,15 @@ def generate_json_stats_report(
             "model_provider": model_provider,
             "timestamp": datetime.datetime.now().isoformat(),
             "report_version": "3.0",  # Updated version for cleaned up code
+            "bootstrap": {
+                "enabled": include_bootstrap,
+                "method": "bca",
+                "sampling_unit": SCENARIO_CLUSTER_SAMPLING_UNIT,
+                "num_resamples": bootstrap_num_resamples,
+                "sample_ratio": bootstrap_sample_ratio,
+                "confidence_level": bootstrap_confidence_level,
+                "random_seed": bootstrap_random_seed,
+            },
         },
         "statistics": stats,
         "run_configurations": run_configs,

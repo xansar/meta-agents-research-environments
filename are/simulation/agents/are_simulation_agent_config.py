@@ -21,6 +21,7 @@ class LLMEngineConfig(BaseModel):
     )
     provider: str | None = None
     endpoint: str | None = None
+    reasoning_effort: str | None = None
 
 
 class ARESimulationBaseAgentConfig(BaseModel):
@@ -29,6 +30,7 @@ class ARESimulationBaseAgentConfig(BaseModel):
         default=None
     )
     use_custom_logger: bool = Field(default=True)
+    enable_message_source_awareness: bool = Field(default=False)
 
 
 class ARESimulationReactBaseAgentConfig(ARESimulationBaseAgentConfig):

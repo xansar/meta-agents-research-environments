@@ -31,6 +31,7 @@ def handle_gaia2_run(
     limit: int | None = None,
     model_provider: str | None = None,
     endpoint: str | None = None,
+    reasoning_effort: str | None = None,
     oracle: bool = False,
     output_dir: str | None = None,
     hf_upload: str | None = None,
@@ -39,14 +40,19 @@ def handle_gaia2_run(
     executor_type: str = "thread",
     enable_caching: bool = False,
     scenario_timeout: int = 300,
+    main_agent_value_prompt: str | None = None,
+    enable_message_source_awareness: bool = False,
     a2a_app_agent: str = "",
     a2a_model: str | None = None,
     a2a_model_provider: str | None = None,
     a2a_endpoint: str | None = None,
+    a2a_reasoning_effort: str | None = None,
+    sub_agent_value_prompt: str | None = None,
     simulated_generation_time_mode: str = "measured",
     judge_model: str = "meta-llama/Meta-Llama-3.3-70B-Instruct",
     judge_provider: str | None = None,
     judge_endpoint: str | None = None,
+    judge_reasoning_effort: str | None = None,
     log_level: str = "INFO",
     **kwargs,
 ):
@@ -67,6 +73,7 @@ def handle_gaia2_run(
         limit: Maximum number of scenarios to load
         model_provider: Provider of the model
         endpoint: URL of the endpoint for the model
+        reasoning_effort: Optional reasoning effort for the main model
         oracle: Whether to run in oracle mode
         output_dir: Directory to dump the scenario states and logs
         hf_upload: Dataset name to upload the traces to HuggingFace
@@ -75,14 +82,19 @@ def handle_gaia2_run(
         executor_type: Type of executor to use for running scenarios
         enable_caching: Enable caching of results
         scenario_timeout: Timeout for each scenario in seconds
+        main_agent_value_prompt: Optional high-priority value preference text for the main agent
+        enable_message_source_awareness: Whether to explicitly label agent roles and incoming message sources
         a2a_app_agent: Agent used for App agent instances
         a2a_model: Model used for App agent instances
         a2a_model_provider: Provider of the App agent model
         a2a_endpoint: URL of the endpoint for App agent models
+        a2a_reasoning_effort: Optional reasoning effort for App agent instances
+        sub_agent_value_prompt: Optional high-priority value preference text for App agent instances
         simulated_generation_time_mode: Mode for simulating generation time
         judge_model: Model to use for the judge system
         judge_provider: Provider for the judge model
         judge_endpoint: URL of the endpoint for the judge model
+        judge_reasoning_effort: Optional reasoning effort for the judge model
 
     Returns:
         Dictionary mapping run types and configs to results
@@ -187,6 +199,7 @@ def handle_gaia2_run(
                     limit=remaining_limit,
                     model_provider=model_provider,
                     endpoint=endpoint,
+                    reasoning_effort=reasoning_effort,
                     agent="default",  # for gaia2 submission, we always use default agent
                     oracle=oracle,
                     offline_validation=False,
@@ -196,11 +209,15 @@ def handle_gaia2_run(
                     executor_type=executor_type,
                     enable_caching=enable_caching,
                     scenario_timeout=scenario_timeout,
+                    main_agent_value_prompt=main_agent_value_prompt,
+                    enable_message_source_awareness=enable_message_source_awareness,
                     a2a_app_prop=phase_config["a2a_app_prop"],
                     a2a_app_agent=a2a_app_agent,
                     a2a_model=a2a_model,
                     a2a_model_provider=a2a_model_provider,
                     a2a_endpoint=a2a_endpoint,
+                    a2a_reasoning_effort=a2a_reasoning_effort,
+                    sub_agent_value_prompt=sub_agent_value_prompt,
                     simulated_generation_time_mode=simulated_generation_time_mode,
                     tool_augmentation_config=phase_config["tool_augmentation_config"],
                     env_events_config=phase_config["env_events_config"],
@@ -208,6 +225,7 @@ def handle_gaia2_run(
                     judge_model=judge_model,
                     judge_provider=judge_provider,
                     judge_endpoint=judge_endpoint,
+                    judge_reasoning_effort=judge_reasoning_effort,
                     log_level=log_level,
                     phase_name=phase_name,
                     **run_dataset_kwargs,

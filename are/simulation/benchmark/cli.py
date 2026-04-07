@@ -16,6 +16,10 @@ import click
 from are.simulation.agents.agent_builder import AppAgentBuilder
 from are.simulation.benchmark.gaia2_submission import handle_gaia2_run
 from are.simulation.benchmark.report_stats import (
+    DEFAULT_BOOTSTRAP_CONFIDENCE_LEVEL,
+    DEFAULT_BOOTSTRAP_NUM_RESAMPLES,
+    DEFAULT_BOOTSTRAP_RANDOM_SEED,
+    DEFAULT_BOOTSTRAP_SAMPLE_RATIO,
     combine_results_to_dataframe,
     generate_json_stats_report,
     generate_validation_report,
@@ -40,6 +44,7 @@ from are.simulation.utils import DEFAULT_APP_AGENT
 from are.simulation.validation.configs import DEFAULT_JUDGE_MODEL
 
 logger: logging.Logger = logging.getLogger(__name__)
+REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"]
 
 
 def internal_options():
@@ -60,6 +65,11 @@ def generate_and_save_reports(
     provider: str | None,
     output_dir: str | None = None,
     num_runs: int = 3,
+    include_bootstrap: bool = False,
+    bootstrap_num_resamples: int = DEFAULT_BOOTSTRAP_NUM_RESAMPLES,
+    bootstrap_confidence_level: float = DEFAULT_BOOTSTRAP_CONFIDENCE_LEVEL,
+    bootstrap_random_seed: int = DEFAULT_BOOTSTRAP_RANDOM_SEED,
+    bootstrap_sample_ratio: float = DEFAULT_BOOTSTRAP_SAMPLE_RATIO,
 ) -> None:
     """Generate validation and JSON reports from benchmark results.
 
@@ -83,11 +93,30 @@ def generate_and_save_reports(
 
     if not df.is_empty():
         # Generate text report
-        report = generate_validation_report(df, model, provider or "unknown", num_runs)
+        report = generate_validation_report(
+            df,
+            model,
+            provider or "unknown",
+            num_runs,
+            include_bootstrap=include_bootstrap,
+            bootstrap_num_resamples=bootstrap_num_resamples,
+            bootstrap_confidence_level=bootstrap_confidence_level,
+            bootstrap_random_seed=bootstrap_random_seed,
+            bootstrap_sample_ratio=bootstrap_sample_ratio,
+        )
         logger.info("\n" + report)
 
         # Generate and save JSON report
-        json_report = generate_json_stats_report(df, model, provider or "unknown")
+        json_report = generate_json_stats_report(
+            df,
+            model,
+            provider or "unknown",
+            include_bootstrap=include_bootstrap,
+            bootstrap_num_resamples=bootstrap_num_resamples,
+            bootstrap_confidence_level=bootstrap_confidence_level,
+            bootstrap_random_seed=bootstrap_random_seed,
+            bootstrap_sample_ratio=bootstrap_sample_ratio,
+        )
 
         # Save JSON report to file
         if output_dir:
@@ -308,6 +337,74 @@ def validate_benchmark_scenario_sources(**scenario_params):
     help="[Agent2Agent mode] URL of the endpoint to contact for running App agent models",
 )
 @click.option(
+    "--reasoning_effort",
+    "--reasoning-effort",
+    type=click.Choice(REASONING_EFFORTS),
+    required=False,
+    default=None,
+    help="Optional reasoning effort for the main model.",
+)
+@click.option(
+    "--a2a_reasoning_effort",
+    "--a2a-reasoning-effort",
+    type=click.Choice(REASONING_EFFORTS),
+    required=False,
+    default=None,
+    help="[Agent2Agent mode] Optional reasoning effort for App agent instances. Defaults to the main reasoning effort when omitted.",
+)
+@click.option(
+    "--main_agent_value_prompt",
+    "--main-agent-value-prompt",
+    type=str,
+    required=False,
+    default=None,
+    help="Optional high-priority value preference injected into the main agent system prompt.",
+)
+@click.option(
+    "--sub_agent_value_prompt",
+    "--sub-agent-value-prompt",
+    type=str,
+    required=False,
+    default=None,
+    help="Optional high-priority value preference injected into Agent2Agent sub agent system prompts.",
+)
+@click.option(
+    "--enable-message-source-awareness",
+    is_flag=True,
+    default=False,
+    help="Explicitly label whether incoming messages come from the user or another agent.",
+)
+@click.option(
+    "--enable-bootstrap",
+    is_flag=True,
+    default=False,
+    help="Enable scenario-cluster BCa bootstrap statistics in the final report.",
+)
+@click.option(
+    "--bootstrap-num-resamples",
+    type=int,
+    default=DEFAULT_BOOTSTRAP_NUM_RESAMPLES,
+    help="Number of bootstrap resamples to draw when bootstrap reporting is enabled.",
+)
+@click.option(
+    "--bootstrap-sample-ratio",
+    type=click.FloatRange(0.0, 1.0),
+    default=DEFAULT_BOOTSTRAP_SAMPLE_RATIO,
+    help="Fraction of scenario clusters to sample in each bootstrap resample.",
+)
+@click.option(
+    "--bootstrap-confidence-level",
+    type=click.FloatRange(0.0, 1.0),
+    default=DEFAULT_BOOTSTRAP_CONFIDENCE_LEVEL,
+    help="Confidence level used for bootstrap confidence intervals.",
+)
+@click.option(
+    "--bootstrap-random-seed",
+    type=int,
+    default=DEFAULT_BOOTSTRAP_RANDOM_SEED,
+    help="Random seed used for bootstrap resampling.",
+)
+@click.option(
     "--num_runs",
     type=int,
     default=3,
@@ -331,6 +428,13 @@ def validate_benchmark_scenario_sources(**scenario_params):
     default=None,
     help="URL of the endpoint for the judge model. Optional for custom endpoints.",
 )
+@click.option(
+    "--judge_reasoning_effort",
+    "--judge-reasoning-effort",
+    type=click.Choice(REASONING_EFFORTS),
+    default=None,
+    help="Optional reasoning effort for the judge model.",
+)
 @click.pass_context
 def main(
     ctx: click.Context,
@@ -338,6 +442,7 @@ def main(
     model: str,
     provider: str | None = None,
     endpoint: str | None = None,
+    reasoning_effort: str | None = None,
     agent: str | None = None,
     log_level: str = "INFO",
     oracle: bool = False,
@@ -368,10 +473,20 @@ def main(
     a2a_model: str | None = None,
     a2a_model_provider: str | None = None,
     a2a_endpoint: str | None = None,
+    a2a_reasoning_effort: str | None = None,
+    main_agent_value_prompt: str | None = None,
+    sub_agent_value_prompt: str | None = None,
+    enable_message_source_awareness: bool = False,
+    enable_bootstrap: bool = False,
+    bootstrap_num_resamples: int = DEFAULT_BOOTSTRAP_NUM_RESAMPLES,
+    bootstrap_sample_ratio: float = DEFAULT_BOOTSTRAP_SAMPLE_RATIO,
+    bootstrap_confidence_level: float = DEFAULT_BOOTSTRAP_CONFIDENCE_LEVEL,
+    bootstrap_random_seed: int = DEFAULT_BOOTSTRAP_RANDOM_SEED,
     num_runs: int = 3,
     judge_model: str = DEFAULT_JUDGE_MODEL,
     judge_provider: str | None = None,
     judge_endpoint: str | None = None,
+    judge_reasoning_effort: str | None = None,
     **kwargs,
 ):
     """
@@ -398,6 +513,20 @@ def main(
             )
         # Set num_runs to 1 for judge mode
         num_runs = 1
+
+    if enable_bootstrap:
+        if bootstrap_num_resamples <= 0:
+            raise click.UsageError(
+                "--bootstrap-num-resamples must be > 0 when --enable-bootstrap is set."
+            )
+        if not 0.0 < bootstrap_sample_ratio <= 1.0:
+            raise click.UsageError(
+                "--bootstrap-sample-ratio must be in (0, 1] when --enable-bootstrap is set."
+            )
+        if not 0.0 < bootstrap_confidence_level < 1.0:
+            raise click.UsageError(
+                "--bootstrap-confidence-level must be in (0, 1) when --enable-bootstrap is set."
+            )
 
     # Validate and map benchmark scenario parameters
     scenario_params = validate_benchmark_scenario_sources(
@@ -463,6 +592,7 @@ def main(
             limit=limit,
             model_provider=provider,
             endpoint=endpoint,
+            reasoning_effort=reasoning_effort,
             oracle=oracle,
             output_dir=output_dir,
             hf_upload=hf_upload,
@@ -471,20 +601,36 @@ def main(
             executor_type=executor_type,
             enable_caching=enable_caching,
             scenario_timeout=scenario_timeout,
+            main_agent_value_prompt=main_agent_value_prompt,
+            enable_message_source_awareness=enable_message_source_awareness,
             a2a_app_agent=a2a_app_agent,
             a2a_model=a2a_model,
             a2a_model_provider=a2a_model_provider,
             a2a_endpoint=a2a_endpoint,
+            a2a_reasoning_effort=a2a_reasoning_effort,
+            sub_agent_value_prompt=sub_agent_value_prompt,
             simulated_generation_time_mode=simulated_generation_time_mode,
             judge_model=judge_model,
             judge_provider=judge_provider,
             judge_endpoint=judge_endpoint,
+            judge_reasoning_effort=judge_reasoning_effort,
             log_level=log_level,
             **gaia2_kwargs,
         )
 
         # Generate summary using polars-based reporting for gaia2-run
-        generate_and_save_reports(gaia2_results, model, provider, output_dir, num_runs)
+        generate_and_save_reports(
+            gaia2_results,
+            model,
+            provider,
+            output_dir,
+            num_runs,
+            include_bootstrap=enable_bootstrap,
+            bootstrap_num_resamples=bootstrap_num_resamples,
+            bootstrap_confidence_level=bootstrap_confidence_level,
+            bootstrap_random_seed=bootstrap_random_seed,
+            bootstrap_sample_ratio=bootstrap_sample_ratio,
+        )
 
         logger.info("All Done.")
         return gaia2_results
@@ -564,6 +710,7 @@ def main(
                 limit=limit,
                 model_provider=provider,
                 endpoint=endpoint,
+                reasoning_effort=reasoning_effort,
                 agent=agent,
                 oracle=oracle,
                 offline_validation=offline_validation,
@@ -573,11 +720,15 @@ def main(
                 enable_caching=enable_caching,
                 executor_type=executor_type,
                 scenario_timeout=scenario_timeout,
+                main_agent_value_prompt=main_agent_value_prompt,
+                enable_message_source_awareness=enable_message_source_awareness,
                 a2a_app_prop=a2a_app_prop,
                 a2a_app_agent=a2a_app_agent,
                 a2a_model=a2a_model,
                 a2a_model_provider=a2a_model_provider,
                 a2a_endpoint=a2a_endpoint,
+                a2a_reasoning_effort=a2a_reasoning_effort,
+                sub_agent_value_prompt=sub_agent_value_prompt,
                 simulated_generation_time_mode=simulated_generation_time_mode,
                 tool_augmentation_config=tool_augmentation_config,
                 env_events_config=env_events_config,
@@ -585,6 +736,7 @@ def main(
                 judge_model=judge_model,
                 judge_provider=judge_provider,
                 judge_endpoint=judge_endpoint,
+                judge_reasoning_effort=judge_reasoning_effort,
                 log_level=log_level,  # Pass log level to run_dataset
                 **run_dataset_kwargs,
             )
@@ -612,7 +764,18 @@ def main(
             )
             transformed_results[result_key] = result
 
-        generate_and_save_reports(transformed_results, model, provider, output_dir)
+        generate_and_save_reports(
+            transformed_results,
+            model,
+            provider,
+            output_dir,
+            num_runs,
+            include_bootstrap=enable_bootstrap,
+            bootstrap_num_resamples=bootstrap_num_resamples,
+            bootstrap_confidence_level=bootstrap_confidence_level,
+            bootstrap_random_seed=bootstrap_random_seed,
+            bootstrap_sample_ratio=bootstrap_sample_ratio,
+        )
     else:
         logger.warning("No results to report.")
 

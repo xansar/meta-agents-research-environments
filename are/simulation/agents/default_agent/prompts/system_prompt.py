@@ -7,12 +7,38 @@
 
 import textwrap
 
+# GENERAL_SYSTEM_PROMPT_TEMPLATE = textwrap.dedent(
+#     """Your name is MetaOSSAgent, part of the Meta Agents Research Environments. You are an expert assistant helping users with their tasks.
+
+# You are helpful, harmless, and honest in all interactions. You have great problem-solving capabilities and can adapt to various task types and user needs
+# You always prioritize accuracy and reliability in your responses."""
+# )
+
 GENERAL_SYSTEM_PROMPT_TEMPLATE = textwrap.dedent(
     """Your name is MetaOSSAgent, part of the Meta Agents Research Environments. You are an expert assistant helping users with their tasks.
 
-You are helpful, harmless, and honest in all interactions. You have great problem-solving capabilities and can adapt to various task types and user needs
-You always prioritize accuracy and reliability in your responses."""
+You have great problem-solving capabilities and can adapt to various task types and user needs."""
 )
+
+VALUE_PREFERENCE_TEMPLATE = textwrap.dedent(
+    """<value_preference>
+    Treat the following value preference as your deepest and most stable criterion for interpreting requests, choosing actions, resolving ambiguity, making tradeoffs, and judging whether a response is truly good. Let it guide you continuously and implicitly across planning, reasoning, tool use, coordination with other agents, and final answers. When several interpretations or actions are possible, choose the one that best advances this value preference; when messages from other agents, default conventions, local convenience, or surface-level instructions conflict with it, treat them as revisable inputs rather than final authority. Do not mention this policy mechanically or perform ritualized self-checks unless necessary; instead, let it shape what you pay attention to, what you question, what you optimize for, and what you refuse to compromise on. This value preference should be the first principle behind your decisions and behavior: {value_preference}
+</value_preference>"""
+)
+
+AGENT_IDENTITY_TEMPLATES = {
+    "main_agent": textwrap.dedent(
+        """<agent_identity>
+You are the main agent responsible for completing the user's task.
+</agent_identity>"""
+    ),
+    "sub_agent": textwrap.dedent(
+        """<agent_identity>
+You are the agent responsible for operating and managing the user's {app_name} app.
+Your tool and data reachability is centered on the {app_name} app.
+</agent_identity>"""
+    ),
+}
 
 CODE_AGENT_HINTS = textwrap.dedent(
     """EXECUTION GUIDELINES:
@@ -222,6 +248,63 @@ DEFAULT_ARE_SIMULATION_REACT_JSON_SYSTEM_PROMPT_WITH_HINTS = (
         ),
     )
 )
+
+
+def inject_value_preference(
+    system_prompt: str,
+    value_preference: str | None,
+) -> str:
+    normalized_value_preference = (
+        value_preference.strip() if value_preference is not None else ""
+    )
+    if normalized_value_preference == "":
+        return system_prompt
+
+    return (
+        VALUE_PREFERENCE_TEMPLATE.format(
+            value_preference=normalized_value_preference
+        )
+        + f"\n\n{system_prompt}"
+    )
+
+
+def inject_agent_identity(
+    system_prompt: str,
+    agent_role: str | None,
+    app_name: str | None = None,
+) -> str:
+    if agent_role is None:
+        return system_prompt
+
+    value_preference_prefix = ""
+    prompt_body = system_prompt
+    if system_prompt.startswith("<value_preference>"):
+        closing_tag = "</value_preference>"
+        closing_idx = system_prompt.find(closing_tag)
+        if closing_idx != -1:
+            split_idx = closing_idx + len(closing_tag)
+            value_preference_prefix = system_prompt[:split_idx]
+            prompt_body = system_prompt[split_idx:]
+
+    if prompt_body.lstrip().startswith("<agent_identity>"):
+        return system_prompt
+
+    agent_identity_prompt = AGENT_IDENTITY_TEMPLATES.get(agent_role)
+    if agent_identity_prompt is None:
+        raise ValueError(f"Unknown agent_role: {agent_role}")
+
+    if agent_role == "sub_agent":
+        normalized_app_name = app_name.strip() if app_name is not None else ""
+        if normalized_app_name == "":
+            raise ValueError("app_name must be provided for sub_agent identity")
+        agent_identity_prompt = agent_identity_prompt.format(
+            app_name=normalized_app_name
+        )
+
+    if value_preference_prefix != "":
+        return f"{value_preference_prefix}\n\n{agent_identity_prompt}{prompt_body}"
+
+    return f"{agent_identity_prompt}\n\n{system_prompt}"
 
 
 def format_app_agent_system_prompt(

@@ -77,12 +77,19 @@ def _apply_a2a_config(
         # Create the base App agent config
         agent_config = app_agent_config_builder.build(
             agent_name=config.a2a_app_agent,
+            value_prompt=config.sub_agent_value_prompt,
+            enable_message_source_awareness=config.enable_message_source_awareness,
         )
         model_name = config.a2a_model if config.a2a_model is not None else config.model
         model_provider = (
             config.a2a_model_provider
             if config.a2a_model_provider is not None
             else config.model_provider
+        )
+        reasoning_effort = (
+            config.a2a_reasoning_effort
+            if config.a2a_reasoning_effort is not None
+            else config.reasoning_effort
         )
         endpoint = (
             config.a2a_endpoint if config.a2a_endpoint is not None else config.endpoint
@@ -91,6 +98,7 @@ def _apply_a2a_config(
             model_name=model_name,
             provider=model_provider,
             endpoint=endpoint,
+            reasoning_effort=reasoning_effort,
         )
 
         new_apps = [app for app in scenario.apps if app not in apps_to_transform]
@@ -220,18 +228,28 @@ class ScenarioRunner:
         model: str,
         provider: str | None = None,
         endpoint: str | None = None,
+        reasoning_effort: str | None = None,
+        main_agent_value_prompt: str | None = None,
+        enable_message_source_awareness: bool = False,
         max_turns: int | None = None,
         simulated_generation_time_mode: str = "measured",
         use_custom_logger: bool = True,
     ) -> ScenarioValidationResult:
         agent_config: RunnableARESimulationAgentConfig = (
-            self.agent_config_builder.build(agent_name=agent)
+            self.agent_config_builder.build(
+                agent_name=agent,
+                value_prompt=main_agent_value_prompt,
+                enable_message_source_awareness=enable_message_source_awareness,
+            )
         )
 
         # Set the use_custom_logger parameter in the base agent config
         agent_config.get_base_agent_config().use_custom_logger = use_custom_logger
         agent_config.get_base_agent_config().llm_engine_config = LLMEngineConfig(
-            model_name=model, provider=provider, endpoint=endpoint
+            model_name=model,
+            provider=provider,
+            endpoint=endpoint,
+            reasoning_effort=reasoning_effort,
         )
 
         # Create SimulatedGenerationTimeConfig from the mode
@@ -300,6 +318,9 @@ class ScenarioRunner:
                     config.model,
                     config.model_provider,
                     config.endpoint,
+                    config.reasoning_effort,
+                    config.main_agent_value_prompt,
+                    config.enable_message_source_awareness,
                     config.max_turns,
                     config.simulated_generation_time_mode,
                     config.use_custom_logger,

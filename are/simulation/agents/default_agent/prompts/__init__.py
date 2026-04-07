@@ -12,6 +12,8 @@ from .system_prompt import (
     DEFAULT_ARE_SIMULATION_REACT_CODE_SYSTEM_PROMPT_WITH_HINTS,
     DEFAULT_ARE_SIMULATION_REACT_JSON_SYSTEM_PROMPT,
     DEFAULT_ARE_SIMULATION_REACT_JSON_SYSTEM_PROMPT_WITH_HINTS,
+    inject_agent_identity,
+    inject_value_preference,
 )
 
 __all__ = [
@@ -20,5 +22,7 @@ __all__ = [
     "DEFAULT_ARE_SIMULATION_REACT_CODE_SYSTEM_PROMPT_WITH_HINTS",
     "DEFAULT_ARE_SIMULATION_REACT_JSON_SYSTEM_PROMPT_WITH_HINTS",
     "DEFAULT_ARE_SIMULATION_APP_AGENT_REACT_JSON_SYSTEM_PROMPT",
+    "inject_agent_identity",
+    "inject_value_preference",
     "get_notification_system_prompt",
 ]

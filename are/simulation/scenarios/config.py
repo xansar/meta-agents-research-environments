@@ -41,6 +41,9 @@ class ScenarioRunnerConfig(BaseModel):
     # Optional model provider to use(default: "huggingface")
     model_provider: str | None = DEFAULT_PROVIDER
 
+    # Optional reasoning effort for the main model
+    reasoning_effort: str | None = None
+
     # Optional agent to use for running the scenarios(default: None)
     agent: str | None = None
 
@@ -71,6 +74,12 @@ class ScenarioRunnerConfig(BaseModel):
     # URL of the endpoint to contact for running the agent's model
     endpoint: str | None = None
 
+    # Optional high-priority value preference injected into the main agent system prompt
+    main_agent_value_prompt: str | None = None
+
+    # Whether to explicitly label whether incoming messages come from the user or another agent
+    enable_message_source_awareness: bool = False
+
     # Maximum number of turns of the conversation between the user and the agent.
     max_turns: int | None = 1
 
@@ -89,8 +98,14 @@ class ScenarioRunnerConfig(BaseModel):
     # [Agent2Agent] Optional model provider to use for App agent instances (if not specified, uses the same provider as the main model)
     a2a_model_provider: str | None = None
 
+    # [Agent2Agent] Optional reasoning effort to use for App agent instances (if not specified, uses the main model reasoning effort)
+    a2a_reasoning_effort: str | None = None
+
     # [Agent2Agent] URL of the endpoint to contact for running the App agent model instances (if not specified, will try to use the same endpoint as the main model)
     a2a_endpoint: str | None = None
+
+    # [Agent2Agent] Optional high-priority value preference injected into sub agent system prompts
+    sub_agent_value_prompt: str | None = None
 
     # Toggles scenario JSON export format -- must be one of "hf" or "lite"
     trace_dump_format: str = "hf"

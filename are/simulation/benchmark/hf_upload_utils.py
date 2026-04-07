@@ -407,7 +407,11 @@ def generate_submission_summary(
         # Generate validation report content with markdown formatting
         df = combine_results_to_dataframe(results)
         validation_content = generate_validation_report_content(
-            df, num_runs, header_format="###", header_prefix="", header_suffix=""
+            df,
+            num_runs,
+            header_format="###",
+            header_prefix="",
+            header_suffix="",
         )
 
         # Add the validation report content to the summary

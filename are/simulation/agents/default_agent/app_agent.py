@@ -11,6 +11,31 @@ from are.simulation.tool_utils import OperationType, app_tool
 from are.simulation.types import event_registered
 
 
+def format_app_agent_task(
+    task: str,
+    enable_message_source_awareness: bool = False,
+    timestamp: float | None = None,
+) -> str:
+    effective_timestamp = 0.0 if timestamp is None else timestamp
+    sender = Sender.AGENT if enable_message_source_awareness else Sender.USER
+    message = str(
+        AUIMessage(
+            sender=sender,
+            content=task,
+            timestamp=effective_timestamp,
+            time_read=effective_timestamp,
+        )
+    )
+    if not enable_message_source_awareness:
+        return message
+
+    return (
+        "<incoming_message source=\"agent\">\n"
+        f"{message}\n"
+        "</incoming_message>"
+    )
+
+
 class AppAgent(App):
     # an app with a single tool: expert_agent that itself has all the tools of the app
     def __init__(
@@ -18,11 +43,13 @@ class AppAgent(App):
         app_agent,
         tools,
         name,
+        enable_message_source_awareness: bool = False,
     ) -> None:
         super().__init__()
         self.name = name
         self.app_agent = app_agent
         self.app_agent.tools = tools
+        self.enable_message_source_awareness = enable_message_source_awareness
 
     @app_tool()
     @event_registered(operation_type=OperationType.READ)
@@ -36,13 +63,10 @@ class AppAgent(App):
             - Once a task is send to the expert Agent you will not be able to communicate with them.
         """
         timestamp = self.time_manager.time()
-        task = str(
-            AUIMessage(
-                sender=Sender.USER,
-                content=task,
-                timestamp=timestamp,
-                time_read=timestamp,
-            )
+        task = format_app_agent_task(
+            task=task,
+            enable_message_source_awareness=self.enable_message_source_awareness,
+            timestamp=timestamp,
         )
         answer = self.app_agent.run(task=task)
         return str(answer)

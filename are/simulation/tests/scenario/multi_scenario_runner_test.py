@@ -14,6 +14,7 @@ from are.simulation.cli.utils import run_scenarios_by_json_files
 from are.simulation.multi_scenario_runner import (
     MultiScenarioRunner,
     ScenarioTimeoutError,
+    _create_scenario_runner_config,
 )
 from are.simulation.scenario_runner import ScenarioRunner
 from are.simulation.scenarios.config import MultiScenarioRunnerConfig
@@ -31,6 +32,21 @@ class MockSlowScenario(Scenario):
 
     def __str__(self):
         return f"MockSlowScenario({self.scenario_id})"
+
+
+class MockConfigProjectionScenario(Scenario):
+    """Mock scenario for validating config projection into ScenarioRunnerConfig."""
+
+    def __init__(
+        self,
+        scenario_id: str = "test_config_projection_scenario",
+        nb_turns: int | None = None,
+    ):
+        self.scenario_id = scenario_id
+        self.nb_turns = nb_turns
+
+    def __str__(self):
+        return f"MockConfigProjectionScenario({self.scenario_id})"
 
 
 def mock_slow_scenario_runner_run(runner_config, scenario, completed_events):
@@ -188,6 +204,72 @@ def test_timeout_error_type():
     error = ScenarioTimeoutError("Test timeout message")
     assert isinstance(error, Exception)
     assert str(error) == "Test timeout message"
+
+
+def test_create_scenario_runner_config_forwards_shared_fields():
+    """Test that shared runner config fields are forwarded into per-scenario runs."""
+    config = MultiScenarioRunnerConfig(
+        model="test-model",
+        model_provider="test-provider",
+        reasoning_effort="medium",
+        endpoint="https://example.test",
+        agent="default",
+        export=True,
+        output_dir="/tmp/test_config_projection",
+        max_turns=7,
+        a2a_app_prop=1.0,
+        a2a_app_agent="default_app_agent",
+        a2a_model="test-a2a-model",
+        a2a_model_provider="test-a2a-provider",
+        a2a_reasoning_effort="high",
+        a2a_endpoint="https://a2a.example.test",
+        main_agent_value_prompt="Prefer verifiable answers.",
+        enable_message_source_awareness=True,
+        sub_agent_value_prompt="Keep sub-agent calls concise.",
+        trace_dump_format="both",
+        use_custom_logger=False,
+        simulated_generation_time_mode="fixed",
+    )
+    scenario = MockConfigProjectionScenario(nb_turns=None)
+
+    runner_config = _create_scenario_runner_config(config, scenario)
+
+    assert runner_config.model == config.model
+    assert runner_config.model_provider == config.model_provider
+    assert runner_config.reasoning_effort == config.reasoning_effort
+    assert runner_config.endpoint == config.endpoint
+    assert runner_config.agent == config.agent
+    assert runner_config.export == config.export
+    assert runner_config.output_dir == config.output_dir
+    assert runner_config.max_turns == config.max_turns
+    assert runner_config.a2a_app_prop == config.a2a_app_prop
+    assert runner_config.a2a_app_agent == config.a2a_app_agent
+    assert runner_config.a2a_model == config.a2a_model
+    assert runner_config.a2a_model_provider == config.a2a_model_provider
+    assert runner_config.a2a_reasoning_effort == config.a2a_reasoning_effort
+    assert runner_config.a2a_endpoint == config.a2a_endpoint
+    assert runner_config.main_agent_value_prompt == config.main_agent_value_prompt
+    assert (
+        runner_config.enable_message_source_awareness
+        == config.enable_message_source_awareness
+    )
+    assert runner_config.sub_agent_value_prompt == config.sub_agent_value_prompt
+    assert runner_config.trace_dump_format == config.trace_dump_format
+    assert runner_config.use_custom_logger == config.use_custom_logger
+    assert (
+        runner_config.simulated_generation_time_mode
+        == config.simulated_generation_time_mode
+    )
+
+
+def test_create_scenario_runner_config_prefers_scenario_turn_limit():
+    """Test that scenario-specific turn limits override the global config."""
+    config = MultiScenarioRunnerConfig(model="test-model", agent="default", max_turns=7)
+    scenario = MockConfigProjectionScenario(nb_turns=3)
+
+    runner_config = _create_scenario_runner_config(config, scenario)
+
+    assert runner_config.max_turns == 3
 
 
 @pytest.mark.parametrize("timeout_value", [1, 5, 10])

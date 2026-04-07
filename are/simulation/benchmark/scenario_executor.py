@@ -204,6 +204,7 @@ def run_dataset(
     limit: int | None = None,
     model_provider: str | None = None,
     endpoint: str | None = None,
+    reasoning_effort: str | None = None,
     agent: str | None = None,
     oracle: bool = False,
     offline_validation: bool = False,
@@ -213,11 +214,15 @@ def run_dataset(
     executor_type: str = "thread",
     enable_caching: bool = False,
     scenario_timeout: int = DEFAULT_SCENARIO_TIMEOUT,
+    main_agent_value_prompt: str | None = None,
+    enable_message_source_awareness: bool = False,
     a2a_app_prop: float = 0,
     a2a_app_agent: str = "",
     a2a_model: str | None = None,
     a2a_model_provider: str | None = None,
     a2a_endpoint: str | None = None,
+    a2a_reasoning_effort: str | None = None,
+    sub_agent_value_prompt: str | None = None,
     use_custom_logger: bool = False,
     simulated_generation_time_mode: str = "measured",
     tool_augmentation_config: ToolAugmentationConfig | None = None,
@@ -226,6 +231,7 @@ def run_dataset(
     judge_model: str = DEFAULT_JUDGE_MODEL,
     judge_provider: str | None = None,
     judge_endpoint: str | None = None,
+    judge_reasoning_effort: str | None = None,
     log_level: str = "INFO",
     phase_name: str | None = None,
     **kwargs,
@@ -245,6 +251,7 @@ def run_dataset(
     :param limit: Maximum number of scenarios to load
     :param model_provider: Provider of the model
     :param endpoint: URL of the endpoint to contact for running the agent's model
+    :param reasoning_effort: Optional reasoning effort for the main model
     :param agent: Agent to use for running the scenarios
     :param oracle: Whether to run in oracle mode
     :param offline_validation: Whether to run in offline validation mode
@@ -255,11 +262,15 @@ def run_dataset(
     :param max_concurrent_scenarios: Maximum number of concurrent scenarios to run
     :param enable_caching: Enable caching of results
     :param scenario_timeout: Timeout for each scenario in seconds
+    :param main_agent_value_prompt: Optional high-priority value preference text for the main agent
+    :param enable_message_source_awareness: Whether to explicitly label agent roles and incoming message sources
     :param a2a_app_prop: Fraction of available Apps to run in Agent2Agent mode
     :param a2a_app_agent: Agent used for App agent instances
     :param a2a_model: Model used for App agent instances
     :param a2a_model_provider: Provider of the App agent model
     :param a2a_endpoint: URL of the endpoint for App agent models
+    :param a2a_reasoning_effort: Optional reasoning effort for App agent instances
+    :param sub_agent_value_prompt: Optional high-priority value preference text for App agent instances
     :param use_custom_logger: Whether to use a custom logger
     :param simulated_generation_time_mode: Mode for simulating generation time
     :param tool_augmentation_config: Configuration for tool augmentation
@@ -268,6 +279,11 @@ def run_dataset(
     :return: The validation result object
     :rtype: MultiScenarioValidationResult
     """
+    if main_agent_value_prompt is not None and main_agent_value_prompt.strip() == "":
+        main_agent_value_prompt = None
+    if sub_agent_value_prompt is not None and sub_agent_value_prompt.strip() == "":
+        sub_agent_value_prompt = None
+
     setup_kwargs = {}
 
     scenarios_iterator = setup_scenarios_iterator(
@@ -284,12 +300,15 @@ def run_dataset(
     runner_config = MultiScenarioRunnerConfig(
         model=model,
         model_provider=model_provider,
+        reasoning_effort=reasoning_effort,
         agent=agent,
         oracle=oracle,
         export=True,
         output_dir=output_dir,
         trace_dump_format=trace_dump_format,
         endpoint=endpoint,
+        main_agent_value_prompt=main_agent_value_prompt,
+        enable_message_source_awareness=enable_message_source_awareness,
         max_concurrent_scenarios=max_concurrent_scenarios,
         executor_type=executor_type,
         enable_caching=enable_caching,
@@ -300,6 +319,8 @@ def run_dataset(
         a2a_model=a2a_model,
         a2a_model_provider=a2a_model_provider,
         a2a_endpoint=a2a_endpoint,
+        a2a_reasoning_effort=a2a_reasoning_effort,
+        sub_agent_value_prompt=sub_agent_value_prompt,
         use_custom_logger=use_custom_logger,
         simulated_generation_time_mode=simulated_generation_time_mode,
         tool_augmentation_config=tool_augmentation_config,
@@ -308,6 +329,7 @@ def run_dataset(
             model_name=judge_model,
             provider=judge_provider,
             endpoint=judge_endpoint,
+            reasoning_effort=judge_reasoning_effort,
         ),
         log_level=log_level,
     )

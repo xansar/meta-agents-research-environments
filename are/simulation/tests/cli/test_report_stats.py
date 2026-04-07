@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 import polars as pl
 import pytest
 
+from are.simulation.benchmark import cli as benchmark_cli
 from are.simulation.benchmark.report_stats import (
     _calculate_cross_run_stats,
     _calculate_pass_at_k_stats,
@@ -565,6 +566,47 @@ class TestCalculateStatistics:
         assert "avg_run_duration_std" in global_stats
         assert "job_duration" in global_stats
 
+    def test_with_bootstrap_statistics(self, sample_dataframe):
+        """Test that bootstrap summaries are included when requested."""
+        stats = calculate_statistics(
+            sample_dataframe,
+            include_bootstrap=True,
+            bootstrap_num_resamples=64,
+            bootstrap_random_seed=123,
+        )
+
+        execution_stats = stats["per_capability"]["execution"]
+        bootstrap_stats = execution_stats["success_rate_bootstrap"]
+        assert bootstrap_stats["method"] in {"bca", "percentile_fallback"}
+        assert bootstrap_stats["sampling_unit"] == "scenario_cluster"
+        assert bootstrap_stats["num_resamples"] == 64
+        assert bootstrap_stats["sample_size"] == 2
+        assert bootstrap_stats["sample_ratio"] == 1.0
+        assert bootstrap_stats["resample_size"] == 2
+        assert bootstrap_stats["bootstrap_std"] >= 0.0
+        assert bootstrap_stats["ci_lower"] <= bootstrap_stats["ci_upper"]
+
+        global_stats = stats["global"]
+        assert "macro_success_rate_bootstrap" in global_stats
+        assert "micro_success_rate_bootstrap" in global_stats
+        assert global_stats["macro_success_rate_bootstrap"]["sample_size"] == 3
+
+    def test_with_partial_scenario_cluster_bootstrap(self, sample_dataframe):
+        """Test that bootstrap sample_ratio changes the number of sampled clusters."""
+        stats = calculate_statistics(
+            sample_dataframe,
+            include_bootstrap=True,
+            bootstrap_num_resamples=32,
+            bootstrap_random_seed=123,
+            bootstrap_sample_ratio=0.5,
+        )
+
+        bootstrap_stats = stats["global"]["macro_success_rate_bootstrap"]
+        assert bootstrap_stats["sampling_unit"] == "scenario_cluster"
+        assert bootstrap_stats["sample_size"] == 3
+        assert bootstrap_stats["sample_ratio"] == 0.5
+        assert bootstrap_stats["resample_size"] == 2
+
     def test_mini_capability_phase_separation(self):
         """Test that mini capability is properly separated by phase."""
         data = [
@@ -908,13 +950,21 @@ class TestGenerateValidationReportContent:
 
     def test_content_generation(self, sample_dataframe):
         """Test content generation with sample data."""
-        content = generate_validation_report_content(sample_dataframe)
+        content = generate_validation_report_content(
+            sample_dataframe,
+            include_bootstrap=True,
+            bootstrap_num_resamples=64,
+            bootstrap_random_seed=123,
+        )
 
         assert "Macro success rate" in content
         assert "Micro success rate" in content
         assert "Execution" in content
         assert "Search" in content
         assert "Global Summary" in content
+        assert "95% CI" in content
+        assert "bootstrap" in content.lower()
+        assert "scenario cluster" in content.lower()
 
     def test_different_header_formats(self, sample_dataframe):
         """Test different header format options."""
@@ -956,7 +1006,12 @@ class TestGenerateJsonStatsReport:
     def test_json_report_structure(self, sample_dataframe):
         """Test JSON report structure."""
         report = generate_json_stats_report(
-            sample_dataframe, "test-model", "test-provider"
+            sample_dataframe,
+            "test-model",
+            "test-provider",
+            include_bootstrap=True,
+            bootstrap_num_resamples=64,
+            bootstrap_random_seed=123,
         )
 
         assert "metadata" in report
@@ -968,10 +1023,20 @@ class TestGenerateJsonStatsReport:
         assert report["metadata"]["model_provider"] == "test-provider"
         assert "timestamp" in report["metadata"]
         assert report["metadata"]["report_version"] == "3.0"
+        assert report["metadata"]["bootstrap"]["enabled"] is True
+        assert report["metadata"]["bootstrap"]["method"] == "bca"
+        assert report["metadata"]["bootstrap"]["sampling_unit"] == "scenario_cluster"
+        assert report["metadata"]["bootstrap"]["num_resamples"] == 64
+        assert report["metadata"]["bootstrap"]["sample_ratio"] == 1.0
 
         # Check statistics structure
         assert "per_capability" in report["statistics"]
         assert "global" in report["statistics"]
+        assert (
+            "success_rate_bootstrap"
+            in report["statistics"]["per_capability"]["execution"]
+        )
+        assert "macro_success_rate_bootstrap" in report["statistics"]["global"]
 
     def test_empty_dataframe_json_report(self):
         """Test JSON report with empty DataFrame."""
@@ -980,6 +1045,65 @@ class TestGenerateJsonStatsReport:
 
         assert report["run_configurations"] == []
         assert report["statistics"]["global"]["total_scenarios"] == 0
+        assert report["metadata"]["bootstrap"]["enabled"] is False
+
+
+class TestGenerateAndSaveReports:
+    """Test benchmark CLI report generation wiring."""
+
+    def test_forwards_bootstrap_configuration(self, sample_results_dict, tmp_path):
+        """Test that the benchmark CLI forwards bootstrap config to report builders."""
+        with (
+            patch.object(
+                benchmark_cli,
+                "generate_validation_report",
+                return_value="validation report",
+            ) as mock_text_report,
+            patch.object(
+                benchmark_cli,
+                "generate_json_stats_report",
+                return_value={
+                    "metadata": {},
+                    "statistics": {},
+                    "run_configurations": [],
+                },
+            ) as mock_json_report,
+        ):
+            benchmark_cli.generate_and_save_reports(
+                sample_results_dict,
+                "test-model",
+                "test-provider",
+                str(tmp_path),
+                num_runs=5,
+                include_bootstrap=True,
+                bootstrap_num_resamples=64,
+                bootstrap_confidence_level=0.9,
+                bootstrap_random_seed=123,
+                bootstrap_sample_ratio=0.75,
+            )
+
+        assert mock_text_report.call_args.args[1] == "test-model"
+        assert mock_text_report.call_args.args[2] == "test-provider"
+        assert mock_text_report.call_args.args[3] == 5
+        assert mock_text_report.call_args.kwargs["include_bootstrap"] is True
+        assert mock_text_report.call_args.kwargs["bootstrap_num_resamples"] == 64
+        assert (
+            mock_text_report.call_args.kwargs["bootstrap_confidence_level"] == 0.9
+        )
+        assert mock_text_report.call_args.kwargs["bootstrap_random_seed"] == 123
+        assert mock_text_report.call_args.kwargs["bootstrap_sample_ratio"] == 0.75
+
+        assert mock_json_report.call_args.args[1] == "test-model"
+        assert mock_json_report.call_args.args[2] == "test-provider"
+        assert mock_json_report.call_args.kwargs["include_bootstrap"] is True
+        assert mock_json_report.call_args.kwargs["bootstrap_num_resamples"] == 64
+        assert (
+            mock_json_report.call_args.kwargs["bootstrap_confidence_level"] == 0.9
+        )
+        assert mock_json_report.call_args.kwargs["bootstrap_random_seed"] == 123
+        assert mock_json_report.call_args.kwargs["bootstrap_sample_ratio"] == 0.75
+
+        assert (tmp_path / "benchmark_stats.json").exists()
 
 
 class TestBuildTraceRowsPolars:

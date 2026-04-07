@@ -271,9 +271,7 @@ def main():
     df = combine_results_to_dataframe(results)
 
     # Generate validation report
-    validation_report = generate_validation_report(
-        df, args.model, args.model_provider, 3
-    )
+    validation_report = generate_validation_report(df, args.model, args.model_provider, 3)
     print("\n" + "=" * 80)
     print("VALIDATION REPORT")
     print("=" * 80)

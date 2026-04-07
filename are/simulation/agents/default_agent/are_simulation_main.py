@@ -38,6 +38,23 @@ from are.simulation.types import SimulatedGenerationTimeConfig
 logger: logging.Logger = logging.getLogger(__name__)
 
 
+def format_main_agent_task_from_notifications(
+    user_notifications: list[Message],
+    enable_message_source_awareness: bool = False,
+) -> str:
+    if not enable_message_source_awareness:
+        return "\n".join([message.message for message in user_notifications])
+
+    formatted_messages = []
+    for message in user_notifications:
+        formatted_messages.append(
+            "<incoming_message source=\"user\">\n"
+            f"{message.message}\n"
+            "</incoming_message>"
+        )
+    return "\n\n".join(formatted_messages)
+
+
 class ARESimulationAgent(RunnableARESimulationAgent):
     def __init__(
         self,
@@ -50,6 +67,7 @@ class ARESimulationAgent(RunnableARESimulationAgent):
         tools: list[Tool] | None = None,
         max_iterations: int = 80,
         max_turns: int | None = None,
+        enable_message_source_awareness: bool = False,
         simulated_generation_time_config: SimulatedGenerationTimeConfig | None = None,
     ):
         super().__init__()
@@ -67,6 +85,7 @@ class ARESimulationAgent(RunnableARESimulationAgent):
         # If this is None, we will loop forever waiting for the user message, or env notification.
         # Until the environment sends an ENVIRONMENT_STOP message.
         self.max_turns = max_turns
+        self.enable_message_source_awareness = enable_message_source_awareness
 
         # Main agent
         self.react_agent = base_agent
@@ -362,7 +381,10 @@ class ARESimulationAgent(RunnableARESimulationAgent):
     def build_task_from_notifications(self, user_notifications: list[Message]) -> str:
         if len(user_notifications) > 0:
             logger.info(f"New messages from user {user_notifications}")
-        task = "\n".join([message.message for message in user_notifications])
+        task = format_main_agent_task_from_notifications(
+            user_notifications,
+            enable_message_source_awareness=self.enable_message_source_awareness,
+        )
         return task
 
     def set_subagents(self):

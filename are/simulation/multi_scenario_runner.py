@@ -126,25 +126,15 @@ def _create_scenario_runner_config(
 ) -> ScenarioRunnerConfig:
     """Create a ScenarioRunnerConfig from a MultiScenarioRunnerConfig and a scenario."""
     runner_config = ScenarioRunnerConfig(
-        model=config.model,
-        model_provider=config.model_provider,
-        endpoint=config.endpoint,
-        agent=config.agent,
-        scenario_creation_params=config.scenario_creation_params,
-        scenario_initialization_params=config.scenario_initialization_params,
-        oracle=config.oracle,
-        export=config.export,
-        wait_for_user_input_timeout=config.wait_for_user_input_timeout,
-        trace_dump_format=config.trace_dump_format,
-        output_dir=config.output_dir,
-        judge_only=config.judge_only,
-        a2a_app_prop=config.a2a_app_prop,
-        a2a_app_agent=config.a2a_app_agent,
-        a2a_model=config.a2a_model,
-        simulated_generation_time_mode=config.simulated_generation_time_mode,
-        use_custom_logger=config.use_custom_logger,
-        tool_augmentation_config=config.tool_augmentation_config,
-        env_events_config=config.env_events_config,
+        **config.model_dump(
+            exclude={
+                "max_concurrent_scenarios",
+                "timeout_seconds",
+                "executor_type",
+                "log_level",
+                "enable_caching",
+            }
+        )
     )
     if scenario.nb_turns is not None:
         runner_config.max_turns = scenario.nb_turns

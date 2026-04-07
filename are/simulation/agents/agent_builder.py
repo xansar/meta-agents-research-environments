@@ -14,6 +14,7 @@ from are.simulation.agents.are_simulation_agent_config import (
     RunnableARESimulationAgentConfig,
 )
 from are.simulation.agents.default_agent.app_agent import AppAgent
+from are.simulation.agents.default_agent.prompts import inject_agent_identity
 from are.simulation.agents.llm.llm_engine_builder import LLMEngineBuilder
 from are.simulation.apps import App
 from are.simulation.environment import Environment
@@ -92,6 +93,7 @@ class AgentBuilder(AbstractAgentBuilder):
                         max_turns=agent_config.max_turns,
                         pause_env=env.pause,
                         resume_env=env.resume_with_offset,
+                        enable_message_source_awareness=agent_config.base_agent_config.enable_message_source_awareness,
                         simulated_generation_time_config=(
                             agent_config.get_base_agent_config().simulated_generation_time_config
                         ),
@@ -169,9 +171,20 @@ class AppAgentBuilder(AbstractAppAgentBuilder):
                     engine_config=agent_config.llm_engine_config,
                     mock_responses=mock_responses,
                 )
+                effective_agent_config = agent_config
+                if agent_config.enable_message_source_awareness:
+                    effective_agent_config = agent_config.model_copy(
+                        update={
+                            "system_prompt": inject_agent_identity(
+                                agent_config.system_prompt,
+                                "sub_agent",
+                                app_name=app.name,
+                            )
+                        }
+                    )
                 app_agent = AppAgent(
                     app_agent=are_simulation_react_json_app_agent(
-                        llm_engine, agent_config, env.append_to_world_logs
+                        llm_engine, effective_agent_config, env.append_to_world_logs
                     ),
                     tools={
                         tool.name: tool
@@ -179,6 +192,7 @@ class AppAgentBuilder(AbstractAppAgentBuilder):
                         + [FinalAnswerTool()]
                     },
                     name=app.name,
+                    enable_message_source_awareness=agent_config.enable_message_source_awareness,
                 )
                 return app_agent
             case _:

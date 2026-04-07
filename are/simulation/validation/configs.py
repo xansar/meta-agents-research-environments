@@ -54,6 +54,7 @@ def create_judge_engine(
         model_name=judge_engine_config.model_name,
         provider=final_provider,
         endpoint=judge_engine_config.endpoint,
+        reasoning_effort=judge_engine_config.reasoning_effort,
     )
 
     return LiteLLMEngine(model_config=judge_config)
